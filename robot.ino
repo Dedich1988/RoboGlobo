@@ -1,104 +1,90 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 
-// Инициализация PCA9685
+/* ================== КОНФИГУРАЦИЯ ОБОРУДОВАНИЯ ================== */
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-// Пределы для сервоприводов
-#define SERVOMIN 100 // Минимальный сигнал (0 градусов)
-#define SERVOMAX 600 // Максимальный сигнал (180 градусов)
+// Параметры сервоприводов
+#define SERVOMIN 100   // 0° (минимальный импульс)
+#define SERVOMAX 600   // 180° (максимальный импульс)
+const int headServo = 0; // Канал головы
+const int jawServo = 1;  // Канал челюсти
 
-// Каналы сервоприводов
-const int headServo = 0; // Канал для головы
-const int jawServo = 1;  // Канал для челюсти
+// Текущие положения
+int currentHeadAngle = 50; // Диапазон 0-180°
+int currentJawAngle = 50;  // Диапазон 0-80°
 
-// Начальные значения углов
-int currentHeadAngle = 50; // Начальное положение головы
-int currentJawAngle = 50;   // Начальное положение челюсти
-
+/* ================== СИСТЕМНЫЕ ФУНКЦИИ ================== */
 void setup() {
   Serial.begin(115200);
-  
-  // Инициализация PCA9685
   pwm.begin();
-  pwm.setPWMFreq(60); // Частота 60 Гц
+  pwm.setPWMFreq(60);
+  
+  // Инициализация сервоприводов
+  moveServo(headServo, currentHeadAngle);
+  moveServo(jawServo, currentJawAngle);
 
-  // Установка начальных позиций
-  moveServo(headServo, currentHeadAngle); // Установите голову в начальное положение
-  moveServo(jawServo, currentJawAngle);   // Установите челюсть в начальное положение
-
-  Serial.println("Сервоприводы готовы к работе.");
+  // Вывод инструкций
+  printHelp();
 }
 
 void loop() {
-  if (Serial.available() > 0) { // Проверяем, есть ли данные в последовательном мониторе
-    String command = Serial.readStringUntil('\n'); // Читаем команду до конца строки
+  handleSerialInput();
+}
 
-    if (command.startsWith("dens ")) { // Проверяем команду dens
+/* ================== ФУНКЦИИ УПРАВЛЕНИЯ ================== */
+// Основная функция обработки команд
+void handleSerialInput() {
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command.startsWith("dens ")) {
       handleDensCommand(command);
-    } else if (command == "H") { // Управление головой
-      moveHead();
-    } else if (command == "J") { // Управление челюстью
-      moveJaw();
-    } else if (command == "O") { // Открыть челюсть до 70 градусов
-      moveJawTo(111);
-    } else if (command == "C") { // Закрыть челюсть до 55 градусов
-      moveJawTo(55);
-    } else if (command == "S") { // Имитация речи
-      speak("Hello World");
-    } else {
-      Serial.println("Ошибка: недопустимая команда. Используйте 'H', 'J', 'O', 'C', 'S' или 'dens'.");
+    } 
+    else switch(command[0]) {
+      case 'H': moveHeadInteractive(); break;
+      case 'J': moveJawInteractive(); break; // Исправлено на moveJawInteractive
+      case 'O': moveJawTo(70); break;
+      case 'C': moveJawTo(55); break;
+      case 'S': speak("Тревога! Обнаружена проблема."); break; // Исправлено на speak
+      case '?': printHelp(); break;
+      default: 
+        Serial.println("ERROR: Unknown command");
+        printHelp();
     }
   }
 }
 
-// Функция для перемещения челюсти в заданный угол
-void moveJawTo(int targetAngle) {
-   if (targetAngle >= 49 && targetAngle <= 111) { 
-      currentJawAngle = targetAngle;
-      moveServo(jawServo, currentJawAngle);
-      Serial.print("Челюсть перемещена в ");
-      Serial.print(currentJawAngle);
-      Serial.println(" градусов");
-   } else {
-      Serial.println("Ошибка: угол вне допустимого диапазона (0-111 градусов).");
-   }
-}
-
-// Обработка команды dens
-void handleDensCommand(String command) {
+// Плавное движение головой по заданным углам
+void handleDensCommand(String cmd) {
   int angles[3];
+  parseAngles(cmd, angles);
   
-  // Извлекаем углы из команды
-  int startIndex = command.indexOf(' ') + 1;
-  int endIndex = command.indexOf(' ', startIndex);
-  
-  for (int i = 0; i < 3; i++) {
-    if (endIndex == -1) endIndex = command.length(); // Если это последний угол
-    angles[i] = command.substring(startIndex, endIndex).toInt();
-    startIndex = endIndex + 1;
-    endIndex = command.indexOf(' ', startIndex);
-    
-    if (i == 2 && startIndex < command.length()) {
-      angles[i] = command.substring(startIndex).toInt(); // Последний угол
+  // Медленные циклы
+  for(int i=0; i<2; i++) {
+    for(int angle : angles) {
+      smoothMove(headServo, angle, true); // Добавлено true для медленного движения
     }
   }
-
-  // Двигаем голову в указанные позиции с разной скоростью
-  for (int i = 0; i < 2; i++) { // Два раза медленно
-    for (int angle : angles) {
-      moveToAngle(angle, true); // true для медленного движения
-    }
-  }
-
-  for (int i = 0; i < 2; i++) { // Два раза чуть быстрее
-    for (int angle : angles) {
-      moveToAngle(angle, false); // false для быстрого движения
+  
+  // Быстрые циклы
+  for(int i=0; i<2; i++) {
+    for(int angle : angles) {
+      smoothMove(headServo, angle, false); // Добавлено false для быстрого движения
     }
   }
 }
 
-void moveToAngle(int targetAngle, bool slow) {
+/* ================== ФУНКЦИИ ДВИЖЕНИЯ ================== */
+// Универсальная функция управления сервой
+void moveServo(int servo, int angle) {
+  int pulse = map(constrain(angle, 0, 180), 0, 180, SERVOMIN, SERVOMAX);
+  pwm.setPWM(servo, 0, pulse);
+}
+
+// Плавное движение с заданной скоростью
+void smoothMove(int servo, int targetAngle, bool slow) {
    int stepDelay = slow ? 50 : 20; // Задержка между шагами
 
    while (currentHeadAngle != targetAngle) {
@@ -108,7 +94,7 @@ void moveToAngle(int targetAngle, bool slow) {
        currentHeadAngle--;
      }
      
-     moveServo(headServo, currentHeadAngle);
+     moveServo(servo, currentHeadAngle);
      delay(stepDelay);
      
      Serial.print("Голова перемещена в ");
@@ -117,71 +103,85 @@ void moveToAngle(int targetAngle, bool slow) {
    }
 }
 
-void moveHead() {
-   Serial.print("Введите угол для головы (-5 или +5): ");
+// Управление головой через терминал
+void moveHeadInteractive() {
+  Serial.print("Введите угол для головы (-5/+5): ");
   
-   while (!Serial.available()); // Ожидаем ввода данных
-   int step = Serial.parseInt(); // Читаем шаг от пользователя
+  while (!Serial.available()); // Ожидаем ввода данных
+  int step = Serial.parseInt(); // Читаем шаг от пользователя
 
-   if (step == -5 && currentHeadAngle >= 5) {
-     currentHeadAngle -= 5; // Уменьшаем угол на -5 градусов
-     moveServo(headServo, currentHeadAngle);
-     Serial.print("Голова перемещена в ");
-     Serial.print(currentHeadAngle);
-     Serial.println(" градусов");
-   } else if (step == +5 && currentHeadAngle <=175) {
-     currentHeadAngle +=5; // Увеличиваем угол на +5 градусов
-     moveServo(headServo, currentHeadAngle);
-     Serial.print("Голова перемещена в ");
-     Serial.print(currentHeadAngle);
-     Serial.println(" градусов");
-   } else {
-     Serial.println("Ошибка: угол вне допустимого диапазона (0-180 градусов).");
-   }
+  if (validateAngle(currentHeadAngle + step, 0, 180)) {
+    currentHeadAngle += step;
+    moveServo(headServo, currentHeadAngle);
+    printPosition("Голова", currentHeadAngle);
+  }
 }
 
-void moveJaw() {
-   Serial.print("Введите угол для челюсти (-5 или +5): ");
+// Аналогичная функция для челюсти
+void moveJawInteractive() {
+   Serial.print("Введите угол для челюсти (-5/+5): ");
   
    while (!Serial.available()); // Ожидаем ввода данных
    int step = Serial.parseInt(); // Читаем шаг от пользователя
 
-   if (step == -5 && currentJawAngle >=5) {
-     currentJawAngle -=5; // Уменьшаем угол на -5 градусов
+   if (validateAngle(currentJawAngle + step, 0, 80)) { 
+     currentJawAngle += step; 
      moveServo(jawServo, currentJawAngle);
-     Serial.print("Челюсть закрыта до ");
-     Serial.print(currentJawAngle);
-     Serial.println(" градусов");
-   } else if (step == +5 && currentJawAngle <=80) { // Изменено на максимальное значение челюсти
-     currentJawAngle +=5; // Увеличиваем угол на +5 градусов
-     moveServo(jawServo, currentJawAngle);
-     Serial.print("Челюсть открыта до ");
-     Serial.print(currentJawAngle);
-     Serial.println(" градусов");
+     printPosition("Челюсть", currentJawAngle);
    } else {
      Serial.println("Ошибка: угол вне допустимого диапазона (0-80 градусов).");
    }
 }
 
-// Функция для чтения текущего положения челюсти
-void readJawPosition() {
-   Serial.print("Текущее положение челюсти: ");
-   Serial.print(currentJawAngle);
+// Валидация углов
+bool validateAngle(int angle, int minVal, int maxVal) {
+   return (angle >= minVal && angle <= maxVal);
+}
+
+// Вывод текущего положения сервопривода
+void printPosition(String name, int angle) {
+   Serial.print(name);
+   Serial.print(" перемещена в ");
+   Serial.print(angle);
    Serial.println(" градусов");
+}
+
+// Вывод справочной информации
+void printHelp() {
+   Serial.println("\n=== ROBOT CONTROL SYSTEM ===");
+   Serial.println("H - Управление головой");
+   Serial.println("J - Управление челюстью");
+   Serial.println("O - Открыть челюсть (70°)");
+   Serial.println("C - Закрыть челюсть (55°)");
+   Serial.println("S - Сигнал тревоги");
+   Serial.println("dens X Y Z - Программа движения");
+   Serial.println("? - Эта справка");
+}
+
+// Парсинг углов для команды dens
+void parseAngles(String cmd, int* angles) {
+   int startIndex = cmd.indexOf(' ') + 1;
+   for (int i = 0; i < 3; i++) {
+       int endIndex = cmd.indexOf(' ', startIndex);
+       if (endIndex == -1) endIndex = cmd.length();
+       angles[i] = cmd.substring(startIndex, endIndex).toInt();
+       startIndex = endIndex + 1;
+       if (startIndex >= cmd.length()) break;
+   }
 }
 
 // Функция для имитации речи с движением челюсти
 void speak(String phrase) {
    Serial.println(phrase);
 
-   for (int i = 0; i < 3; i++) { // Повторяем три раза для имитации речи
-       moveJawTo(55); // Открываем челюсть до 55 градусов
-       delay(500);    // Ждем полсекунды (имитация произнесения)
-       moveJawTo(70); // Открываем челюсть до 70 градусов (больше открытие)
-       delay(500);    // Ждем полсекунды (имитация произнесения)
+   for (int i = 0; i < 3; i++) { 
+       moveJawTo(55); 
+       delay(500);    
+       moveJawTo(70); 
+       delay(500);    
        
-       moveJawTo(55); // Закрываем челюсть до 55 градусов после "говорения"
-       delay(500);    // Ждем полсекунды перед следующим повтором
+       moveJawTo(55); 
+       delay(500);    
    }
 
    for (int j = 0; j < 2; j++) { 
@@ -196,8 +196,15 @@ void speak(String phrase) {
    }
 }
 
-// Функция для движения сервопривода
-void moveServo(int servo, int angle) {
-   int pulseLength = map(angle,0,180,SERVOMIN,SERVOMAX);
-   pwm.setPWM(servo,0,pulseLength);
+// Функция для перемещения челюсти в заданный угол
+void moveJawTo(int targetAngle) {
+   if (validateAngle(targetAngle, 0, 80)) { 
+      currentJawAngle = targetAngle;
+      moveServo(jawServo, currentJawAngle);
+      Serial.print("Челюсть перемещена в ");
+      Serial.print(currentJawAngle);
+      Serial.println(" градусов");
+   } else {
+      Serial.println("Ошибка: угол вне допустимого диапазона (0-80 градусов).");
+   }
 }
